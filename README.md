@@ -1,33 +1,31 @@
-# nvim-plugin-template
+# rev.nvim
 
-Neovim plugin template; includes automatic documentation generation from README, integration tests with Busted, and linting with Stylua
+`rev.nvim` is a Neovim plugin that automatically reviews your recent code changes using a Large Language Model (LLM) and Git. It provides actionable recommendations, categorizes them by severity, and can even apply the suggested changes for you.
 
-## Usage
+## Features
 
-1. Click `use this template` button generate a repo on your github.
-2. Clone your plugin repo. Open terminal then cd plugin directory.
-3. Run `python3 rename.py your-plugin-name`. This will replace all `nvim-plugin-template` to your `plugin-name`. 
-   Then it will prompt you input `y` or `n` to remove example codes in `init.lua` and
-   `test/plugin_spec.lua`. If you are familiar this repo just input `y`. If you are looking at this template for the first time I suggest you inspect the contents. After this step `rename.py` will also auto-remove.
+- Analyze your latest Git changes (`git diff`) using an LLM.  
+- Categorize recommendations into:  
+  - **Critical changes** – must-fix issues.  
+  - **Warnings** – suggested improvements.  
+- Interactive workflow:  
+  - Review LLM suggestions before applying.  
+  - Choose to apply recommended changes or continue without them.  
+- Automatic Git operations:  
+  - Apply changes (`git add`, `git commit`) automatically.  
+  - Perform `git pull` to ensure your branch is up-to-date or prompt for rebase if needed.  
+- Fully integrated into Neovim for a seamless developer experience.
 
-Now you have a clean plugin environment. Enjoy!
+## Installation
 
-## Format
+Using [lazy.nvim](https://github.com/folke/lazy.nvim):
 
-The CI uses `stylua` to format the code; customize the formatting by editing `.stylua.toml`.
-
-## Test
-
-See [Running tests locally](https://github.com/nvim-neorocks/nvim-busted-action?tab=readme-ov-file#running-tests-locally)
-
-## CI
-
-- Auto generates doc from README.
-- Runs the [nvim-busted-action](https://github.com/nvim-neorocks/nvim-busted-action) for test.
-- Lints with `stylua`.
-
-## More
-
-To see this template in action, take a look at my other plugins.
-
+```lua
+{
+  'anonymus1145/rev.nvim',
+  dependencies = { 'nvim-lua/lazy.nvim' },
+  config = function()
+    require('llm_code_review').setup()
+  end
+}
 ## License MIT
