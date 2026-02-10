@@ -40,11 +40,12 @@ end
 --- Takes some lines and parses them
 --- @param lines string[]: The lines in the buffer
 --- @return present.Slides
-local parse_slides = function(lines)
+local parse_diff = function(lines)
   local slides = { slides = {} }
   local current_slide = {}
 
-  local separator = '^#'
+  local added_separator = '^+'
+  local removed_separator = '^-'
 
   for _, line in ipairs(lines) do
     print(line, 'find:', line:find(separator), ' | ')
@@ -64,18 +65,28 @@ local parse_slides = function(lines)
   return slides
 end
 
-M.start_presentation_review = function(opts)
+M.start_review = function(opts)
   opts = opts or {}
   opts.bufnr = opts.bufnr or 0
+  -- Return the path we are in
+  local file_path = vim.api.nvim_buf_get_name(opts.bufnr)
 
-  local lines = vim.api.nvim_buf_get_lines(opts.bufnr, 0, -1, false)
-  local parsed = parse_slides(lines)
+  if file_path == '' then
+    return print('Buffer has no file name')
+  end
+
+  -- Run git diff to return the changes
+  local diff_output = vim.system({ 'git', 'diff', '--', file_path }, { text = true }):wait()
+  local lines = vim.split(diff_output.stdout, '\n')
+
+  -- Call the parser
+  local parsed = parse_diff(lines)
   local window = create_float_window(opts)
 
   vim.api.nvim_buf_set_lines(window.buf, 0, -1, false, parsed.slides[1])
 end
 
-M.start_presentation_review({ bufnr = vim.api.nvim_get_current_buf() })
+M.start_review({ bufnr = vim.api.nvim_get_current_buf() })
 
 -- Get the absolute path of the current buffer
 -- local current_file = vim.fn.expand('%:p')
