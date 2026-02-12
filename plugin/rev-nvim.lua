@@ -34,35 +34,33 @@ M.setup = function()
   -- do stuff
 end
 
---- @class present.Slides
---- @field slides string[][]: The slides of the file
-
 --- Takes some lines and parses them
 --- @param lines string[]: The lines in the buffer
---- @return present.Slides
+--- @return string[] | nil: Final parsed and ordered version
 local parse_diff = function(lines)
-  local slides = { slides = {} }
-  local current_slide = {}
+  local added_lines = { '#Added Changes' }
+  local removed_lines = { '#Removed changes' }
 
-  local added_separator = '^+'
-  local removed_separator = '^-'
+  local add_separator = '^%+'
+  local removed_separator = '^%-'
 
   for _, line in ipairs(lines) do
-    print(line, 'find:', line:find(separator), ' | ')
-    if line:find(separator) then
-      if #current_slide > 0 then
-        table.insert(slides.slides, current_slide)
-      end
-
-      current_slide = {}
+    if line:find(add_separator) then
+      table.insert(added_lines, line)
+    elseif line:find(removed_separator) then
+      table.insert(removed_lines, line)
     end
-
-    table.insert(current_slide, line)
   end
 
-  table.insert(slides.slides, current_slide)
+  -- Check if we actually found any diffs/slides
+  if #added_lines <= 1 and #removed_lines <= 2 then
+    return nil
+  end
 
-  return slides
+  local diff = added_lines
+  vim.list_extend(diff, removed_lines)
+
+  return diff
 end
 
 M.start_review = function(opts)
@@ -80,13 +78,21 @@ M.start_review = function(opts)
   local lines = vim.split(diff_output.stdout, '\n')
 
   -- Call the parser
-  local parsed = parse_diff(lines)
+  local diff_lines = parse_diff(lines)
+
+  if not diff_lines or #diff_lines <= 1 then
+    vim.notify('No changes found to review.', vim.log.levels.INFO)
+    return
+  end
+
   local window = create_float_window(opts)
 
-  vim.api.nvim_buf_set_lines(window.buf, 0, -1, false, parsed.slides[1])
+  vim.api.nvim_buf_set_lines(window.buf, 0, -1, false, diff_lines)
 end
 
 M.start_review({ bufnr = vim.api.nvim_get_current_buf() })
+
+return M
 
 -- Get the absolute path of the current buffer
 -- local current_file = vim.fn.expand('%:p')
@@ -97,5 +103,8 @@ M.start_review({ bufnr = vim.api.nvim_get_current_buf() })
 -- local diff = vim.trim(raw_diff)
 
 -- vim.print(diff)
-
-return M
+--
+-- vim.notify(diff_output.stdout, vim.log.levels.INFO)
+-- Use vim.inspect to turn the table into a string
+-- vim.notify(vim.inspect(slides), vim.log.levels.INFO)
+-- Basic print print(line)
