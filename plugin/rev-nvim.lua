@@ -1,35 +1,6 @@
 -- Module -> Public interface for the file
 local M = {}
 
-local function create_float_window(opts)
-  opts = opts or {}
-  local width = opts.width or math.floor(vim.o.columns * 0.8)
-  local height = opts.height or math.floor(vim.o.lines * 0.8)
-
-  -- Calculate the position to center the window
-  local col = math.floor((vim.o.columns - width) / 2)
-  local row = math.floor((vim.o.lines - height) / 2)
-
-  -- Create a buffer
-  local buf = vim.api.nvim_create_buf(false, true) -- No file, scratch buffer
-
-  -- Define window configuration
-  local win_config = {
-    relative = 'editor',
-    width = width,
-    height = height,
-    col = col,
-    row = row,
-    style = 'minimal', -- No borders or extra UI elements
-    border = 'rounded',
-  }
-
-  -- Create the floating window
-  local win = vim.api.nvim_open_win(buf, true, win_config)
-
-  return { buf = buf, win = win }
-end
-
 M.setup = function()
   -- do stuff
 end
@@ -63,6 +34,64 @@ local parse_diff = function(lines)
   return diff
 end
 
+--- Generate chain prompts
+--- @param input number: The lines in the buffer
+--- @return string
+local prompt_create = function(input)
+  return ''
+end
+
+--- Takes the parses diff and prompt the LLM to review it
+--- @param prompt string: The lines in the buffer
+--- @return string[] | nil: Final parsed and ordered version
+local llm_call = function(prompt)
+  -- Ask the LLM to write its own prompt
+  -- Use self-evaluation -> force the LLM to self-evaluate the quality of its answer before outputting it
+  -- Ask the LLM for explanation
+  local api_key = os.getenv('GEMINI_API_KEY')
+
+  -- Escape quotes in the prompt to avoid breaking the JSON
+  local safe_prompt = prompt:gsub('"', '\\"')
+
+  if not api_key then
+    print('Error: GEMINI_API_KEY is not set.')
+    return
+  end
+
+  local cmd = string.format(
+    [[
+curl -s -H 'Content-Type: application/json' \
+-d '{"contents":[{"parts":[{"text":"%s"}]}]}' \
+"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=%s"
+]],
+    safe_prompt,
+    api_key
+  )
+
+  -- Execute and read the output
+  local handle = io.popen(cmd)
+  local result = nil
+
+  if handle then
+    result = handle:read('*a')
+    handle:close()
+  else
+    print('Error: LLM error.')
+    return
+  end
+
+  if not result then
+    print('Error: No review recevied.')
+    return
+  end
+
+  -- Extract the text recevied in result
+  -- Check if candidates and content exist first
+  local answer = vim.json.decode(result)
+  local text = answer.candidates[1].content.parts[1].text
+  print(text)
+end
+
 M.start_review = function(opts)
   opts = opts or {}
   opts.bufnr = opts.bufnr or 0
@@ -85,9 +114,9 @@ M.start_review = function(opts)
     return
   end
 
-  local window = create_float_window(opts)
-
-  vim.api.nvim_buf_set_lines(window.buf, 0, -1, false, diff_lines)
+  -- Concat the diff in an string
+  local final_diff = table.concat(diff_lines, '\n')
+  local review = llm_call(final_diff)
 end
 
 M.start_review({ bufnr = vim.api.nvim_get_current_buf() })
