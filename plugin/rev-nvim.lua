@@ -34,62 +34,116 @@ local parse_diff = function(lines)
   return diff
 end
 
---- Generate chain prompts
---- @param input number: The lines in the buffer
---- @return string
-local prompt_create = function(input)
-  return ''
+--- Takes the prompt and calls the llm
+--- @param prompt string: The lines in the buffer
+--- @return string | nil: Final parsed and ordered version
+local llm_call = function(prompt)
+  local api_key = os.getenv('GEMINI_API_KEY')
+  if not api_key then
+    vim.notify('Error: GEMINI_API_KEY is not set.', vim.log.levels.ERROR)
+    return nil
+  end
+
+  local request_body = {
+    contents = {
+      {
+        parts = {
+          { text = prompt },
+        },
+      },
+    },
+  }
+
+  -- This handles all the "safe_prompt".
+  -- It turns your Lua table into a perfectly formatted JSON string, handling quotes and \n characters automatically
+  local json_payload = vim.json.encode(request_body)
+
+  -- Write payload to a temporary file
+  local tmp_file = vim.fn.tempname() .. '.json'
+  local f = io.open(tmp_file, 'w')
+  if not f then
+    vim.notify('Error: Could not create temporary file.', vim.log.levels.ERROR)
+    return nil
+  end
+  f:write(json_payload)
+  f:close()
+
+  local url = string.format(
+    'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=%s',
+    api_key
+  )
+  local cmd = {
+    'curl',
+    '-s',
+    '-X',
+    'POST',
+    '-H',
+    'Content-Type: application/json',
+    '-d',
+    '@' .. tmp_file,
+    url,
+  }
+  local result = vim.fn.system(cmd)
+
+  -- Remove the temp file
+  os.remove(tmp_file)
+
+  -- Execute and read the output
+  if not result or result == '' then
+    vim.notify('Error: No response from API.', vim.log.levels.ERROR)
+    return nil
+  end
+
+  -- pcall wrapped vim.json.decode in a "protected call." If the API returns a non-JSON error (like a 404 page), the plugin won't crash;
+  local ok, answer = pcall(vim.json.decode, result)
+  if not ok then
+    vim.notify('Error: Failed to parse API response.', vim.log.levels.ERROR)
+    return nil
+  end
+
+  if answer.candidates and answer.candidates[1] and answer.candidates[1].content then
+    return answer.candidates[1].content.parts[1].text
+  else
+    vim.notify('Error: Unexpected API structure.', vim.log.levels.ERROR)
+    return nil
+  end
 end
 
 --- Takes the parses diff and prompt the LLM to review it
---- @param prompt string: The lines in the buffer
+--- @param git_diff string: The lines in the buffer
 --- @return string[] | nil: Final parsed and ordered version
-local llm_call = function(prompt)
+local chain_call = function(git_diff)
   -- Ask the LLM to write its own prompt
+  local initial_prompt =
+    'Create and return only the prompt for doing a code review using a file that has the old(-) and new(+) changes'
+
   -- Use self-evaluation -> force the LLM to self-evaluate the quality of its answer before outputting it
+  local evaluation_prompt = 'Evaluate this answer and change what is necessary'
+
   -- Ask the LLM for explanation
-  local api_key = os.getenv('GEMINI_API_KEY')
+  local generated_prompt = llm_call(initial_prompt)
 
-  -- Escape quotes in the prompt to avoid breaking the JSON
-  local safe_prompt = prompt:gsub('"', '\\"')
+  local input = generated_prompt .. git_diff
 
-  if not api_key then
-    print('Error: GEMINI_API_KEY is not set.')
+  local initial_review = llm_call(input)
+
+  if not initial_review then
+    vim.notify('No code review received.', vim.log.levels.INFO)
     return
   end
 
-  local cmd = string.format(
-    [[
-curl -s -H 'Content-Type: application/json' \
--d '{"contents":[{"parts":[{"text":"%s"}]}]}' \
-"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=%s"
-]],
-    safe_prompt,
-    api_key
-  )
+  -- Force vertical split to the right
+  vim.cmd('rightbelow vsplit')
 
-  -- Execute and read the output
-  local handle = io.popen(cmd)
-  local result = nil
+  -- Create a new temporary buffer
+  local buf = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_win_set_buf(0, buf)
 
-  if handle then
-    result = handle:read('*a')
-    handle:close()
-  else
-    print('Error: LLM error.')
-    return
-  end
+  -- Modern option setting
+  vim.bo[buf].filetype = 'markdown'
+  vim.bo[buf].buftype = 'nofile' -- Keeps it from asking to save on exit
 
-  if not result then
-    print('Error: No review recevied.')
-    return
-  end
-
-  -- Extract the text recevied in result
-  -- Check if candidates and content exist first
-  local answer = vim.json.decode(result)
-  local text = answer.candidates[1].content.parts[1].text
-  print(text)
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, vim.split(initial_review, '\n'))
 end
 
 M.start_review = function(opts)
@@ -116,7 +170,7 @@ M.start_review = function(opts)
 
   -- Concat the diff in an string
   local final_diff = table.concat(diff_lines, '\n')
-  local review = llm_call(final_diff)
+  local review = chain_call(final_diff)
 end
 
 M.start_review({ bufnr = vim.api.nvim_get_current_buf() })
