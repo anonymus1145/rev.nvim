@@ -9,17 +9,21 @@ end
 --- @param lines string[]: The lines in the buffer
 --- @return string[] | nil: Final parsed and ordered version
 local parse_diff = function(lines)
-  local added_lines = { '#Added Changes' }
-  local removed_lines = { '#Removed changes' }
+  local added_lines = { '\n#Added Changes\n' }
+  local removed_lines = { '\n#Removed changes\n' }
+  local context_lines = { '\n#Context\n' }
 
   local add_separator = '^%+'
   local removed_separator = '^%-'
 
   for _, line in ipairs(lines) do
+    print(line)
     if line:find(add_separator) then
       table.insert(added_lines, line)
     elseif line:find(removed_separator) then
       table.insert(removed_lines, line)
+    else
+      table.insert(context_lines, line)
     end
   end
 
@@ -30,6 +34,7 @@ local parse_diff = function(lines)
 
   local diff = added_lines
   vim.list_extend(diff, removed_lines)
+  vim.list_extend(diff, context_lines)
 
   return diff
 end
@@ -157,7 +162,7 @@ M.start_review = function(opts)
   end
 
   -- Run git diff to return the changes
-  local diff_output = vim.system({ 'git', 'diff', '--', file_path }, { text = true }):wait()
+  local diff_output = vim.system({ 'git', 'diff', '-U10' }, { text = true }):wait()
   local lines = vim.split(diff_output.stdout, '\n')
 
   -- Call the parser
