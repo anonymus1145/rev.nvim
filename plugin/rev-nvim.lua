@@ -133,22 +133,10 @@ local chain_call = function(git_diff)
   local initial_review = llm_call(input)
 
   if not initial_review then
-    vim.notify('No code review received.', vim.log.levels.INFO)
-    return
+    return nil
   end
 
-  -- Force vertical split to the right
-  vim.cmd('rightbelow vsplit')
-
-  -- Create a new temporary buffer
-  local buf = vim.api.nvim_create_buf(false, true)
-  vim.api.nvim_win_set_buf(0, buf)
-
-  -- Modern option setting
-  vim.bo[buf].filetype = 'markdown'
-  vim.bo[buf].buftype = 'nofile' -- Keeps it from asking to save on exit
-
-  vim.api.nvim_buf_set_lines(buf, 0, -1, false, vim.split(initial_review, '\n'))
+  return vim.split(initial_review, '\n')
 end
 
 M.start_review = function(opts)
@@ -176,6 +164,24 @@ M.start_review = function(opts)
   -- Concat the diff in an string
   local final_diff = table.concat(diff_lines, '\n')
   local review = chain_call(final_diff)
+
+  if not review then
+    vim.notify('No code review received.', vim.log.levels.INFO)
+    return
+  end
+
+  -- Force vertical split to the right
+  vim.cmd('rightbelow vsplit')
+
+  -- Create a new temporary buffer
+  local buf = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_win_set_buf(0, buf)
+
+  -- Modern option setting
+  vim.bo[buf].filetype = 'markdown'
+  vim.bo[buf].buftype = 'nofile' -- Keeps it from asking to save on exit
+
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, review)
 end
 
 M.start_review({ bufnr = vim.api.nvim_get_current_buf() })
