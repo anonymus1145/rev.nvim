@@ -172,7 +172,7 @@ M.start_review = function(opts)
   end
 
   -- Run git diff to return the changes
-  local diff_output = vim.system({ 'git', 'diff', '-U10' }, { text = true }):wait()
+  local diff_output = vim.system({ 'git', 'diff', '-U20' }, { text = true }):wait()
   local lines = vim.split(diff_output.stdout, '\n')
 
   -- Call the parser
