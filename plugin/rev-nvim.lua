@@ -17,7 +17,6 @@ local parse_diff = function(lines)
   local removed_separator = '^%-'
 
   for _, line in ipairs(lines) do
-    print(line)
     if line:find(add_separator) then
       table.insert(added_lines, line)
     elseif line:find(removed_separator) then
@@ -42,11 +41,13 @@ end
 --- Takes the prompt and calls the llm
 --- @param prompt string: The lines in the buffer
 --- @return string | nil: Final parsed and ordered version
-local llm_call = function(prompt)
+local llm_call = function(prompt, callback)
   local api_key = os.getenv('GEMINI_API_KEY')
-  if not api_key then
-    vim.notify('Error: GEMINI_API_KEY is not set.', vim.log.levels.ERROR)
-    return nil
+  local llm_model = os.getenv('LLM_MODEL')
+
+  if not api_key or not llm_model then
+    vim.notify('Missing API Key or Model environment variables.', vim.log.levels.ERROR)
+    return callback(nil)
   end
 
   local request_body = {
@@ -63,86 +64,107 @@ local llm_call = function(prompt)
   -- It turns your Lua table into a perfectly formatted JSON string, handling quotes and \n characters automatically
   local json_payload = vim.json.encode(request_body)
 
-  -- Write payload to a temporary file
-  local tmp_file = vim.fn.tempname() .. '.json'
-  local f = io.open(tmp_file, 'w')
-  if not f then
-    vim.notify('Error: Could not create temporary file.', vim.log.levels.ERROR)
-    return nil
-  end
-  f:write(json_payload)
-  f:close()
-
   local url = string.format(
-    'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=%s',
+    'https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent?key=%s',
+    llm_model,
     api_key
   )
-  local cmd = {
+
+  vim.system({
     'curl',
     '-s',
     '-X',
     'POST',
     '-H',
     'Content-Type: application/json',
-    '-d',
-    '@' .. tmp_file,
     url,
-  }
-  local result = vim.fn.system(cmd)
+    '--data-binary',
+    '@-', -- Read from stdin
+  }, {
+    stdin = json_payload,
+    text = true,
+  }, function(obj)
+    -- This runs in a background thread!
+    -- We must use vim.schedule to talk to Neovim again.
+    vim.schedule(function()
+      if obj.code ~= 0 then
+        vim.notify('API Request failed: ' .. (obj.stderr or 'Unknown error'), vim.log.levels.ERROR)
+        return callback(nil)
+      end
 
-  -- Remove the temp file
-  os.remove(tmp_file)
+      local ok, answer = pcall(vim.json.decode, obj.stdout)
+      if not ok or not answer.candidates then
+        vim.notify('Failed to parse API response.', vim.log.levels.ERROR)
+        return callback(nil)
+      end
 
-  -- Execute and read the output
-  if not result or result == '' then
-    vim.notify('Error: No response from API.', vim.log.levels.ERROR)
-    return nil
-  end
-
-  -- pcall wrapped vim.json.decode in a "protected call." If the API returns a non-JSON error (like a 404 page), the plugin won't crash;
-  local ok, answer = pcall(vim.json.decode, result)
-  if not ok then
-    vim.notify('Error: Failed to parse API response.', vim.log.levels.ERROR)
-    return nil
-  end
-
-  if answer.candidates and answer.candidates[1] and answer.candidates[1].content then
-    return answer.candidates[1].content.parts[1].text
-  else
-    vim.notify('Error: Unexpected API structure.', vim.log.levels.ERROR)
-    return nil
-  end
+      local text = answer.candidates[1].content.parts[1].text
+      callback(text)
+    end)
+  end)
 end
 
 --- Takes the parses diff and prompt the LLM to review it
 --- @param git_diff string: The lines in the buffer
 --- @return string[] | nil: Final parsed and ordered version
-local chain_call = function(git_diff)
-  -- Ask the LLM to write its own prompt
+local chain_call = function(git_diff, final_callback)
   local initial_prompt =
     'Create and return only the prompt for doing a code review using a file that has the old(-) and new(+) changes'
 
-  -- Use self-evaluation -> force the LLM to self-evaluate the quality of its answer before outputting it
-  local evaluation_prompt = 'Evaluate this answer and change what is necessary'
+  -- Call 1: Get the generated prompt
+  llm_call(initial_prompt, function(generated_prompt)
+    if not generated_prompt then
+      return final_callback(nil)
+    end
 
-  -- Ask the LLM for explanation
-  local generated_prompt = llm_call(initial_prompt)
+    local input = generated_prompt .. '\n\n' .. git_diff
 
-  local input = generated_prompt .. git_diff
+    -- Call 2: Get the actual review
+    llm_call(input, function(review)
+      if not review then
+        return final_callback(nil)
+      end
 
-  local initial_review = llm_call(input)
+      -- Send the final result back to the UI
+      final_callback(vim.split(review, '\n'))
+    end)
+  end)
+end
 
-  if not initial_review then
+local start_spinner = function(buf)
+  local spinner_frames = { '⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏' }
+  local frame = 1
+  local timer = vim.uv.new_timer()
+
+  if not timer then
     return nil
   end
 
-  return vim.split(initial_review, '\n')
+  timer:start(
+    0,
+    100,
+    vim.schedule_wrap(function()
+      -- Safety check: stop if the buffer was closed by the user
+      if not vim.api.nvim_buf_is_valid(buf) then
+        timer:stop()
+        timer:close()
+        return
+      end
+
+      local msg =
+        string.format(' %s Gathering insights from your LLM Model...', spinner_frames[frame])
+      vim.api.nvim_buf_set_lines(buf, 2, 3, false, { msg })
+      frame = (frame % #spinner_frames) + 1
+    end)
+  )
+
+  return timer
 end
 
 M.start_review = function(opts)
   opts = opts or {}
   opts.bufnr = opts.bufnr or 0
-  -- Return the path we are in
+  -- Get the file path associated with the buffer.
   local file_path = vim.api.nvim_buf_get_name(opts.bufnr)
 
   if file_path == '' then
@@ -160,15 +182,8 @@ M.start_review = function(opts)
     vim.notify('No changes found to review.', vim.log.levels.INFO)
     return
   end
-
   -- Concat the diff in an string
   local final_diff = table.concat(diff_lines, '\n')
-  local review = chain_call(final_diff)
-
-  if not review then
-    vim.notify('No code review received.', vim.log.levels.INFO)
-    return
-  end
 
   -- Force vertical split to the right
   vim.cmd('rightbelow vsplit')
@@ -180,25 +195,28 @@ M.start_review = function(opts)
   -- Modern option setting
   vim.bo[buf].filetype = 'markdown'
   vim.bo[buf].buftype = 'nofile' -- Keeps it from asking to save on exit
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, { '# Code Review', '', 'Loading review...' })
 
-  vim.api.nvim_buf_set_lines(buf, 0, -1, false, review)
+  local spinner_timer = start_spinner(buf)
+
+  -- Trigger the async chain
+  chain_call(final_diff, function(review_lines)
+    if spinner_timer then
+      spinner_timer:stop()
+      spinner_timer:close()
+    end
+
+    if not review_lines then
+      vim.api.nvim_buf_set_lines(buf, 0, -1, false, { 'Error: Review failed.' })
+      return
+    end
+
+    -- Update the buffer with the final result
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, review_lines)
+    vim.notify('Review complete!', vim.log.levels.INFO)
+  end)
 end
 
 M.start_review({ bufnr = vim.api.nvim_get_current_buf() })
 
 return M
-
--- Get the absolute path of the current buffer
--- local current_file = vim.fn.expand('%:p')
-
--- Run git diff and output it to the Neovim messages
--- local raw_diff = vim.fn.system('git diff ' .. current_file)
-
--- local diff = vim.trim(raw_diff)
-
--- vim.print(diff)
---
--- vim.notify(diff_output.stdout, vim.log.levels.INFO)
--- Use vim.inspect to turn the table into a string
--- vim.notify(vim.inspect(slides), vim.log.levels.INFO)
--- Basic print print(line)
