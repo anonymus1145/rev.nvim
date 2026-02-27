@@ -217,6 +217,8 @@ M.start_review = function(opts)
   end)
 end
 
-M.start_review({ bufnr = vim.api.nvim_get_current_buf() })
+vim.keymap.set('n', '<leader>rv', function()
+  M.start_review({ bufnr = vim.api.nvim_get_current_buf() })
+end, { desc = 'Start code review' })
 
 return M
