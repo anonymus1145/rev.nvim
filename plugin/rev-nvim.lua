@@ -7,35 +7,29 @@ end
 
 --- Takes some lines and parses them
 --- @param lines string[]: The lines in the buffer
---- @return string[] | nil: Final parsed and ordered version
+--- @return string[] | nil: Formatted diff as a markdown code block, or nil if no changes detected.
 local parse_diff = function(lines)
-  local added_lines = { '\n#Added Changes\n' }
-  local removed_lines = { '\n#Removed changes\n' }
-  local context_lines = { '\n#Context\n' }
-
-  local add_separator = '^%+'
-  local removed_separator = '^%-'
+  local has_change = false
+  local diff_output = {
+    '### Git Diff Analysis',
+    '```diff',
+  }
 
   for _, line in ipairs(lines) do
-    if line:find(add_separator) then
-      table.insert(added_lines, line)
-    elseif line:find(removed_separator) then
-      table.insert(removed_lines, line)
-    else
-      table.insert(context_lines, line)
+    table.insert(diff_output, line)
+    if not has_change and line:find('^[+-][^+-]') then
+      has_change = true
     end
   end
 
+  table.insert(diff_output, '```')
+
   -- Check if we actually found any diffs/slides
-  if #added_lines <= 1 and #removed_lines <= 2 then
+  if #diff_output <= 2 and not has_change then
     return nil
   end
 
-  local diff = added_lines
-  vim.list_extend(diff, removed_lines)
-  vim.list_extend(diff, context_lines)
-
-  return diff
+  return diff_output
 end
 
 --- Takes the prompt and calls the llm
@@ -65,9 +59,8 @@ local llm_call = function(prompt, callback)
   local json_payload = vim.json.encode(request_body)
 
   local url = string.format(
-    'https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent?key=%s',
-    llm_model,
-    api_key
+    'https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent',
+    llm_model
   )
 
   vim.system({
@@ -76,10 +69,12 @@ local llm_call = function(prompt, callback)
     '-X',
     'POST',
     '-H',
+    'x-goog-api-key: ' .. api_key,
+    '-H',
     'Content-Type: application/json',
     url,
     '--data-binary',
-    '@-', -- Read from stdin
+    '@-',
   }, {
     stdin = json_payload,
     text = true,
