@@ -36,40 +36,60 @@ end
 --- @param prompt string: The lines in the buffer
 --- @return string | nil: Final parsed and ordered version
 local llm_call = function(prompt, callback)
-  local api_key = os.getenv('GEMINI_API_KEY')
-  local llm_model = os.getenv('LLM_MODEL')
+  local api_key = os.getenv('REVNVIM_API_KEY')
+  local llm_model = os.getenv('REVNVIM_MODEL')
+  local url = os.getenv('REVNVIM_URL')
 
-  if not api_key or not llm_model then
-    vim.notify('Missing API Key or Model environment variables.', vim.log.levels.ERROR)
+  if
+    api_key == nil
+    or api_key == ''
+    or llm_model == nil
+    or llm_model == ''
+    or url == nil
+    or url == ''
+  then
+    vim.notify('Missing config environment variables.', vim.log.levels.ERROR)
     return callback(nil)
   end
 
   local request_body = {
-    contents = {
+    messages = {
       {
-        parts = {
-          { text = prompt },
-        },
+        role = 'user',
+        content = prompt,
       },
     },
+    model = llm_model,
+    stream = false,
   }
 
   -- This handles all the "safe_prompt".
   -- It turns your Lua table into a perfectly formatted JSON string, handling quotes and \n characters automatically
   local json_payload = vim.json.encode(request_body)
 
-  local url = string.format(
-    'https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent',
-    llm_model
-  )
+  -- Add sensitive header in an config file
+  local uv = vim.uv or vim.loop
+  local config_path = vim.fn.tempname()
+  local config_content = { string.format('header = "Authorization: Bearer %s"', api_key) }
+
+  local fd = uv.fs_open(config_path, 'w', 384)
+
+  if fd then
+    uv.fs_write(fd, config_content, 0)
+    uv.fs_close(fd)
+  else
+    vim.notify('Could not create secure file.', vim.log.levels.ERROR)
+  end
 
   vim.system({
     'curl',
     '-s',
+    '-m',
+    '120',
+    '-K',
+    config_path,
     '-X',
     'POST',
-    '-H',
-    'x-goog-api-key: ' .. api_key,
     '-H',
     'Content-Type: application/json',
     url,
@@ -79,6 +99,8 @@ local llm_call = function(prompt, callback)
     stdin = json_payload,
     text = true,
   }, function(obj)
+    -- ALWAYS cleanup the temp file immediately async
+    uv.fs_unlink(config_path)
     -- This runs in a background thread!
     -- We must use vim.schedule to talk to Neovim again.
     vim.schedule(function()
@@ -88,12 +110,12 @@ local llm_call = function(prompt, callback)
       end
 
       local ok, answer = pcall(vim.json.decode, obj.stdout)
-      if not ok or not answer.candidates then
+      if not ok or not answer.choices or not answer.choices[1] or not answer.choices[1].message then
         vim.notify('Failed to parse API response.', vim.log.levels.ERROR)
         return callback(nil)
       end
 
-      local text = answer.candidates[1].content.parts[1].text
+      local text = answer.choices[1].message.content
       callback(text)
     end)
   end)
@@ -102,34 +124,84 @@ end
 --- Takes the parses diff and prompt the LLM to review it
 --- @param git_diff string: The lines in the buffer
 --- @return string[] | nil: Final parsed and ordered version
-local chain_call = function(git_diff, final_callback)
-  local initial_prompt =
-    'Create and return only the prompt for doing a code review using a file that has the old(-) and new(+) changes'
+local run_review = function(git_diff, final_callback)
+  local uv = vim.uv or vim.loop
+  local path = vim.fn.stdpath('config') .. '/REVNVIM.md'
 
-  -- Call 1: Get the generated prompt
-  llm_call(initial_prompt, function(generated_prompt)
-    if not generated_prompt then
-      return final_callback(nil)
+  -- 1. Open the file
+  uv.fs_open(path, 'r', 438, function(err, fd) -- uv.fs_open returns an integer ID
+    if err then
+      vim.schedule(
+        function() -- vim.schedule: Libuv callbacks run outside of Neovim’s main loop, ensures the code runs safely back on the main thread
+          vim.notify('REVNVIM: Configuration file not found at ' .. path, vim.log.levels.ERROR)
+          final_callback(nil)
+        end
+      )
+      return
     end
 
-    local input = generated_prompt .. '\n\n' .. git_diff
-
-    -- Call 2: Get the actual review
-    llm_call(input, function(review)
-      if not review then
-        return final_callback(nil)
+    -- 2. Get file stats to know the size
+    uv.fs_fstat(fd, function(err, stat)
+      if err or not stat or stat.size > (100 * 1024) then
+        uv.fs_close(fd)
+        vim.schedule(function()
+          vim.notify('Failed to stat config file', vim.log.levels.ERROR)
+          final_callback(nil)
+        end)
+        return
       end
 
-      -- Send the final result back to the UI
-      final_callback(vim.split(review, '\n'))
+      -- 3. Read the entire file content
+      uv.fs_read(fd, stat.size, 0, function(err, data)
+        -- 4. Always close the file descriptor
+        uv.fs_close(fd)
+
+        vim.schedule(function()
+          if err or not data then
+            vim.notify('Error during REVNVIM.md reading...', vim.log.levels.ERROR)
+            return final_callback(nil)
+          end
+
+          -- Success!
+          local diff_len = string.len(git_diff)
+          -- 1 token aprox 4 chars
+          local max_diff_limit = 100000 * 4
+
+          if diff_len > max_diff_limit then
+            vim.notify(
+              'Exceeded the maximum number of tokens in a request...',
+              vim.log.levels.ERROR
+            )
+            return final_callback(nil)
+          end
+
+          local context = '# Do a code review'
+          local input = context .. '\n\n' .. data .. '\n\n' .. git_diff
+
+          llm_call(input, function(review)
+            if not review then
+              return final_callback(nil)
+            end
+
+            -- Send the final result back to the UI
+            final_callback(vim.split(review, '\n'))
+          end)
+        end)
+      end)
     end)
   end)
 end
 
+local timer = nil
+
 local start_spinner = function(buf)
+  if timer then
+    timer:close()
+  end
+
   local spinner_frames = { '⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏' }
   local frame = 1
-  local timer = vim.uv.new_timer()
+  timer = vim.uv.new_timer()
 
   if not timer then
     return nil
@@ -163,57 +235,67 @@ M.start_review = function(opts)
   local file_path = vim.api.nvim_buf_get_name(opts.bufnr)
 
   if file_path == '' then
-    return print('Buffer has no file name')
+    return vim.notify('Buffer has no file name', vim.log.levels.ERROR)
   end
 
   -- Run git diff to return the changes
-  local diff_output = vim.system({ 'git', 'diff', '-U20' }, { text = true }):wait()
-  local lines = vim.split(diff_output.stdout, '\n')
+  vim.system({ 'git', 'diff', '-W', '--minimal' }, { text = true }, function(obj)
+    vim.schedule(function()
+      if obj.code ~= 0 then
+        vim.notify('Git diff failed: ' .. (obj.stderr or ''), vim.log.levels.ERROR)
+        return
+      end
 
-  -- Call the parser
-  local diff_lines = parse_diff(lines)
+      local lines = vim.split(obj.stdout, '\n')
+      local diff_lines = parse_diff(lines)
 
-  if not diff_lines or #diff_lines <= 1 then
-    vim.notify('No changes found to review.', vim.log.levels.INFO)
-    return
-  end
-  -- Concat the diff in an string
-  local final_diff = table.concat(diff_lines, '\n')
+      if not diff_lines or #diff_lines <= 1 then
+        vim.notify('No changes found to review.', vim.log.levels.INFO)
+        return
+      end
 
-  -- Force vertical split to the right
-  vim.cmd('rightbelow vsplit')
+      -- Concat the diff in an string
+      local final_diff = table.concat(diff_lines, '\n')
 
-  -- Create a new temporary buffer
-  local buf = vim.api.nvim_create_buf(false, true)
-  vim.api.nvim_win_set_buf(0, buf)
+      -- Force vertical split to the right
+      vim.cmd('rightbelow vsplit')
 
-  -- Modern option setting
-  vim.bo[buf].filetype = 'markdown'
-  vim.bo[buf].buftype = 'nofile' -- Keeps it from asking to save on exit
-  vim.api.nvim_buf_set_lines(buf, 0, -1, false, { '# Code Review', '', 'Loading review...' })
+      -- Create a new temporary buffer
+      local buf = vim.api.nvim_create_buf(false, true)
+      vim.api.nvim_win_set_buf(0, buf)
 
-  local spinner_timer = start_spinner(buf)
+      -- Modern option setting
+      vim.bo[buf].filetype = 'markdown'
+      vim.bo[buf].buftype = 'nofile' -- Keeps it from asking to save on exit
+      vim.api.nvim_buf_set_lines(buf, 0, -1, false, { '# Code Review', '', 'Loading review...' })
 
-  -- Trigger the async chain
-  chain_call(final_diff, function(review_lines)
-    if spinner_timer then
-      spinner_timer:stop()
-      spinner_timer:close()
-    end
+      local spinner_timer = start_spinner(buf)
 
-    if not review_lines then
-      vim.api.nvim_buf_set_lines(buf, 0, -1, false, { 'Error: Review failed.' })
-      return
-    end
+      -- Trigger the async chain
+      run_review(final_diff, function(review_lines)
+        if spinner_timer then
+          spinner_timer:stop()
+          spinner_timer:close()
+        end
 
-    -- Update the buffer with the final result
-    vim.api.nvim_buf_set_lines(buf, 0, -1, false, review_lines)
-    vim.notify('Review complete!', vim.log.levels.INFO)
+        if not review_lines then
+          vim.api.nvim_buf_set_lines(buf, 0, -1, false, { 'Error: Review failed.' })
+          return
+        end
+
+        -- Update the buffer with the final result
+        vim.api.nvim_buf_set_lines(buf, 0, -1, false, review_lines)
+        vim.notify('Review complete!', vim.log.levels.INFO)
+      end)
+    end)
   end)
 end
 
 vim.keymap.set('n', '<leader>rv', function()
   M.start_review({ bufnr = vim.api.nvim_get_current_buf() })
 end, { desc = 'Start code review' })
+
+-- Testing locally don't add it in the code review
+-- M.start_review()
 
 return M
