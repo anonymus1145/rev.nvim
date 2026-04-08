@@ -19,7 +19,7 @@ Using [lazy.nvim](https://github.com/folke/lazy.nvim):
   'anonymus1145/rev.nvim',
   -- Ensure environment variables are set
   cond = function()
-    return os.getenv("GEMINI_API_KEY") ~= nil
+    return (os.getenv("REVNVIM_API_KEY") ~= nil and os.getenv("REVNVIM_MODEL") and os.getenv("REVNVIM_URL"))
   end
 }
 ```
@@ -29,8 +29,9 @@ Using [lazy.nvim](https://github.com/folke/lazy.nvim):
 The plugin relies on two environment variables. You can export these in your .zshrc or .bashrc:
 
 ```bash
-export GEMINI_API_KEY="your_api_key_here"
-export LLM_MODEL="gemini-1.5-flash" # or gemini-1.5-pro
+export REVNVIM_API_KEY="api_key"
+export REVNVIM_MODEL="llm_model"
+export REVNVIM_URL="model_api"
 ```
 
 ## Usage
