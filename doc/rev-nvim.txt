@@ -1,59 +1,89 @@
-*nvim-plugin-template.nvim.txt*  For NVIM v0.8.0 Last change: 2025 February 12
+*rev-nvim.txt* For NVIM v0.8.0          Last change: 2026 April 11
 
 ==============================================================================
-Table of Contents                *nvim-plugin-template.nvim-table-of-contents*
+Table of Contents                                     *rev-nvim-contents*
 
-1. nvim-plugin-template       |nvim-plugin-template.nvim-nvim-plugin-template|
-  - Usage               |nvim-plugin-template.nvim-nvim-plugin-template-usage|
-  - Format             |nvim-plugin-template.nvim-nvim-plugin-template-format|
-  - Test                 |nvim-plugin-template.nvim-nvim-plugin-template-test|
-  - CI                     |nvim-plugin-template.nvim-nvim-plugin-template-ci|
-  - More                 |nvim-plugin-template.nvim-nvim-plugin-template-more|
-  - License MIT   |nvim-plugin-template.nvim-nvim-plugin-template-license-mit|
+1. Introduction                                       |rev-nvim-intro|
+2. Requirements                                       |rev-nvim-requirements|
+3. Configuration                                      |rev-nvim-config|
+4. Usage                                              |rev-nvim-usage|
+5. Keymaps                                            |rev-nvim-keymaps|
+6. License                                            |rev-nvim-license|
 
 ==============================================================================
-1. nvim-plugin-template       *nvim-plugin-template.nvim-nvim-plugin-template*
+1. Introduction                                       *rev-nvim-intro*
 
-Neovim plugin template; includes automatic documentation generation from
-README, integration tests with Busted, and linting with Stylua
+rev-nvim is an LLM-powered code review tool for Neovim. It allows you to
+quickly get insights on your current git changes or specific blocks of code
+delimited by debug breakpoints.
 
+The plugin opens a vertical split with a live spinner while the LLM processes
+your request, providing a markdown-formatted review.
 
-USAGE                   *nvim-plugin-template.nvim-nvim-plugin-template-usage*
+==============================================================================
+2. Requirements                                       *rev-nvim-requirements*
 
-1. Click `use this template` button generate a repo on your github.
-2. Clone your plugin repo. Open terminal then cd plugin directory.
-3. Run `python3 rename.py your-plugin-name`. This will replace all `nvim-plugin-template` to your `plugin-name`.
-Then it will prompt you input `y` or `n` to remove example codes in `init.lua` and
-`test/plugin_spec.lua`. If you are familiar this repo just input `y`. If you are looking at this template for the first time I suggest you inspect the contents. After this step `rename.py` will also auto-remove.
+- Neovim >= 0.8.0
+- `curl` installed in your system path.
+- `git` (for full diff reviews).
+- `nvim-dap` (optional, required only for |rev-nvim-breakpoint-review|).
 
-Now you have a clean plugin environment. Enjoy!
+==============================================================================
+3. Configuration                                      *rev-nvim-config*
 
+The plugin requires three environment variables to be set in your shell:
 
-FORMAT                 *nvim-plugin-template.nvim-nvim-plugin-template-format*
+- `REVNVIM_API_KEY`: Your LLM provider API key.
+- `REVNVIM_MODEL`:   The model name (e.g., "gpt-4o", "claude-3-5-sonnet").
+- `REVNVIM_URL`:     The API endpoint URL.
 
-The CI uses `stylua` to format the code; customize the formatting by editing
-`.stylua.toml`.
+Additionally, you must create a configuration file at:
+`~/.config/nvim/REVNVIM.md` (or your OS equivalent stdpath).
 
+This file should contain your system prompt or instructions for the LLM.
+Example:
+>
+    # Do a code review
+    Please look for logic errors, performance bottlenecks, and
+    ensure the code follows clean coding principles.
+<
 
-TEST                     *nvim-plugin-template.nvim-nvim-plugin-template-test*
+==============================================================================
+4. Usage                                              *rev-nvim-usage*
 
-See Running tests locally
-<https://github.com/nvim-neorocks/nvim-busted-action?tab=readme-ov-file#running-tests-locally>
+The plugin provides two main entry points:
 
+START REVIEW                                          *rev-nvim-start-review*
+Run `:lua require('rev-nvim').start_review()`
+This executes `git diff -W` on your current working directory and sends the
+entirety of your unstaged changes to the LLM for a comprehensive review.
 
-CI                         *nvim-plugin-template.nvim-nvim-plugin-template-ci*
+BREAKPOINT REVIEW                                  *rev-nvim-breakpoint-review*
+Run `:lua require('rev-nvim').breakpoint_review()`
+This allows you to review a specific range of code.
+1. Open a file.
+2. Set exactly TWO breakpoints (using nvim-dap) to define the start and end.
+3. Trigger the function.
+The code between those two lines will be sent for analysis.
 
-- Auto generates doc from README.
-- Runs the nvim-busted-action <https://github.com/nvim-neorocks/nvim-busted-action> for test.
-- Lints with `stylua`.
+==============================================================================
+5. Keymaps                                            *rev-nvim-keymaps*
 
+By default, the plugin suggests/sets the following mappings:
 
-MORE                     *nvim-plugin-template.nvim-nvim-plugin-template-more*
+- `<leader>rv` : Start a full Git diff review.
+- `<leader>rb` : Review the code block between two breakpoints.
 
-To see this template in action, take a look at my other plugins.
+To customize these, you can disable the default mappings in your init.lua and
+map the functions manually:
+>
+    vim.keymap.set('n', '<your-key>', require('rev-nvim').start_review)
+<
 
+==============================================================================
+6. License                                            *rev-nvim-license*
 
-LICENSE MIT       *nvim-plugin-template.nvim-nvim-plugin-template-license-mit*
+MIT License.
 
 Generated by panvimdoc <https://github.com/kdheepak/panvimdoc>
 

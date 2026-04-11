@@ -327,5 +327,5 @@ end, { desc = 'Start code review' })
 vim.keymap.set('n', '<leader>rb', function()
   M.breakpoint_review()
 end, { desc = 'Start breakpoints block review' })
-
+M.breakpoint_review()
 return M
