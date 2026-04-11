@@ -92,7 +92,10 @@ local llm_call = function(prompt, callback)
       local ok, answer = pcall(vim.json.decode, obj.stdout)
 
       if not ok or not answer.choices or not answer.choices[1] or not answer.choices[1].message then
-        vim.notify('Failed to parse API response.', vim.log.levels.ERROR)
+        if answer.error then
+          return callback(answer.error)
+        end
+        vim.notify('API request failed', vim.log.levels.ERROR)
         return callback(nil)
       end
 
@@ -145,7 +148,7 @@ local run_review = function(git_diff, final_callback)
       return final_callback(nil)
     end
 
-    final_callback(vim.split(review, '\n'))
+    return final_callback(vim.split(review, '\n'))
   end)
 end
 
@@ -166,10 +169,12 @@ local start_spinner = function(buf)
     0,
     100,
     vim.schedule_wrap(function()
-      if not timer:is_closing() then
-        timer:stop()
-        timer:close()
-        return
+      if not vim.api.nvim_buf_is_valid(buf) then
+        if not timer:is_closing() then
+          timer:stop()
+          timer:close()
+          return
+        end
       end
 
       local msg =
@@ -191,14 +196,57 @@ local start_spinner = function(buf)
   return timer
 end
 
+--- Runs the review with the provided code
+--- @param to_review string: The lines to be reviewed
+local run = function(to_review)
+  vim.cmd('rightbelow vsplit')
+
+  local review_buf = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_win_set_buf(0, review_buf)
+
+  -- Modern option setting
+  vim.bo[review_buf].filetype = 'markdown'
+  vim.bo[review_buf].buftype = 'nofile'
+  vim.bo[review_buf].bufhidden = 'wipe'
+
+  vim.api.nvim_buf_set_lines(review_buf, 0, -1, false, { '# Code Review', '', 'Loading review...' })
+
+  local spinner_timer = start_spinner(review_buf)
+
+  if not spinner_timer then
+    vim.notify('REVNVIM: Error during starting the spinner', vim.log.levels.ERROR)
+    return
+  end
+
+  local ok, answer = pcall(run_review, to_review, function(review_lines)
+    if spinner_timer and not spinner_timer:is_closing() then
+      spinner_timer:stop()
+      spinner_timer:close()
+    end
+
+    if not vim.api.nvim_buf_is_valid(review_buf) then
+      return
+    end
+
+    if not review_lines then
+      vim.api.nvim_buf_set_lines(review_buf, 0, -1, false, { 'Error: Review failed.' })
+      return
+    end
+
+    vim.api.nvim_buf_set_lines(review_buf, 0, -1, false, review_lines)
+  end)
+
+  if not ok or not answer then
+    if spinner_timer and not spinner_timer:is_closing() then
+      spinner_timer:stop()
+      spinner_timer:close()
+    end
+    return
+  end
+end
+
 M.start_review = function(opts)
   opts = opts or {}
-  opts.bufnr = opts.bufnr or 0
-  local file_path = vim.api.nvim_buf_get_name(opts.bufnr)
-
-  if file_path == '' then
-    return vim.notify('Buffer has no file name', vim.log.levels.ERROR)
-  end
 
   vim.system({ 'git', 'diff', '-W' }, { text = true }, function(obj)
     vim.schedule(function()
@@ -217,39 +265,67 @@ M.start_review = function(opts)
 
       local final_diff = table.concat(diff_lines, '\n')
 
-      vim.cmd('rightbelow vsplit')
-
-      local buf = vim.api.nvim_create_buf(false, true)
-      vim.api.nvim_win_set_buf(0, buf)
-
-      -- Modern option setting
-      vim.bo[buf].filetype = 'markdown'
-      vim.bo[buf].buftype = 'nofile' -- Keeps it from asking to save on exit
-      vim.api.nvim_buf_set_lines(buf, 0, -1, false, { '# Code Review', '', 'Loading review...' })
-
-      local spinner_timer = start_spinner(buf)
-
-      run_review(final_diff, function(review_lines)
-        if spinner_timer and not spinner_timer:is_closing() then
-          spinner_timer:stop()
-          spinner_timer:close()
-        end
-
-        if not review_lines then
-          vim.api.nvim_buf_set_lines(buf, 0, -1, false, { 'Error: Review failed.' })
-          return
-        end
-
-        -- Update the buffer with the final result
-        vim.api.nvim_buf_set_lines(buf, 0, -1, false, review_lines)
-        vim.notify('Review complete!', vim.log.levels.INFO)
-      end)
+      local ok, answer = pcall(run, final_diff)
+      if not ok or not answer then
+        vim.notify('Issue on run function', vim.log.levels.INFO)
+      end
     end)
   end)
 end
 
+-- Does code review for that specific function where the breakpoint is set
+M.breakpoint_review = function(opts)
+  opts = opts or {}
+
+  local status_dap, dap_bp = pcall(require, 'dap.breakpoints')
+  if not status_dap then
+    vim.notify('Error: nvim-dap is not installed or loaded.', vim.log.levels.ERROR)
+    return
+  end
+
+  local bufnr = vim.api.nvim_get_current_buf()
+
+  local all_breakpoints = dap_bp.get()
+  local buffer_breakpoints = all_breakpoints[bufnr]
+
+  if not buffer_breakpoints or #buffer_breakpoints < 2 or #buffer_breakpoints > 2 then
+    vim.notify('You need only 2 breakpoints in this file to define a range.', vim.log.levels.ERROR)
+    return
+  end
+
+  local lines = {}
+  for _, bp in ipairs(buffer_breakpoints) do
+    table.insert(lines, bp.line)
+  end
+  table.sort(lines)
+
+  local start_line = lines[1]
+  local end_line = lines[2]
+
+  local code_block = vim.api.nvim_buf_get_lines(bufnr, start_line - 1, end_line, false)
+  local final_block = table.concat(code_block, '\n')
+
+  local ok, answer = pcall(run, final_block)
+  if not ok or not answer then
+    vim.notify('Issue on run function', vim.log.levels.INFO)
+  end
+
+  -- setTimeout
+  --  vim.defer_fn(function()
+  --  if spinner_timer and not spinner_timer:is_closing() then
+  --  spinner_timer:stop()
+  --spinner_timer:close()
+  --  end
+  --  vim.api.nvim_buf_set_lines(review_buf, 0, -1, false, code_block)
+  --end, 2000)
+end
+
 vim.keymap.set('n', '<leader>rv', function()
-  M.start_review({ bufnr = vim.api.nvim_get_current_buf() })
+  M.start_review()
 end, { desc = 'Start code review' })
+
+vim.keymap.set('n', '<leader>rb', function()
+  M.breakpoint_review()
+end, { desc = 'Start breakpoints block review' })
 
 return M
